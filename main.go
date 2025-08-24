@@ -15,11 +15,13 @@ import (
 
 func main() {
 	var (
+		failfast bool
 		metadata bool
 		threads  int
 		queue    int
 	)
 
+	flag.BoolVar(&failfast, "failfast", false, "exit after first error")
 	flag.BoolVar(&metadata, "metadata", false, "check only metadata")
 	flag.IntVar(&threads, "threads", runtime.NumCPU(), "num routines")
 	flag.IntVar(&queue, "queue", 1, "size of task queue for routines")
@@ -43,6 +45,7 @@ func main() {
 
 	err := walker.Walk(treeA, treeB, dispatcher.Options{
 		MetadataOnly: metadata,
+		Failfast:     failfast,
 		Threads:      threads,
 		QueueSize:    queue,
 		Context:      ctx,
