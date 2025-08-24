@@ -13,6 +13,14 @@ import (
 	"github.com/decatile/treecmp/walker"
 )
 
+const Help = `treecmp - compare directories recursively
+
+-f, --failfast    exit after first error          (default: false)
+-m, --metadata    check only metadata             (default: false)
+-t, --threads     num routines                    (default: %d)
+-q, --queue       size of task queue for routines (default: 1)
+`
+
 func main() {
 	var (
 		failfast bool
@@ -21,10 +29,20 @@ func main() {
 		queue    int
 	)
 
-	flag.BoolVar(&failfast, "failfast", false, "exit after first error")
-	flag.BoolVar(&metadata, "metadata", false, "check only metadata")
-	flag.IntVar(&threads, "threads", runtime.NumCPU(), "num routines")
-	flag.IntVar(&queue, "queue", 1, "size of task queue for routines")
+	flag.CommandLine.Usage = func() { fmt.Printf(Help, runtime.NumCPU()) }
+
+	flag.BoolVar(&failfast, "f", false, "")
+	flag.BoolVar(&failfast, "failfast", false, "")
+
+	flag.BoolVar(&metadata, "m", false, "")
+	flag.BoolVar(&metadata, "metadata", false, "")
+
+	flag.IntVar(&threads, "t", runtime.NumCPU(), "")
+	flag.IntVar(&threads, "threads", runtime.NumCPU(), "")
+
+	flag.IntVar(&queue, "q", 1, "")
+	flag.IntVar(&queue, "queue", 1, "")
+
 	flag.Parse()
 
 	if flag.NArg() != 2 {
