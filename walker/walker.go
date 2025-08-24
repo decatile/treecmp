@@ -37,7 +37,7 @@ func (w walker) walk() error {
 	}
 	if len(entriesA) != len(entriesB) {
 		return fmt.Errorf(
-			"directories differ in entries amount: '%s' -> '%d', when '%s' -> '%d'",
+			"directories differ in entries amount:\n%s -> %d\n%s -> %d",
 			w.dirA, len(entriesA), w.dirB, len(entriesB),
 		)
 	}
@@ -99,7 +99,7 @@ func (w walker) walk() error {
 				entriesNotFoundB = append(entriesNotFoundB, name)
 			}
 			errs = append(errs, fmt.Errorf(
-				"not matching files in directories '%s' and '%s':\n+ %s\n- %s",
+				"not matching files in directories %s and %s:\n+ %s\n- %s",
 				w.dirA, w.dirB,
 				strings.Join(entriesNotFoundA, "\n+ "),
 				strings.Join(entriesNotFoundB, "\n- "),
@@ -117,7 +117,7 @@ func (w *walker) walkFile(infoA os.FileInfo, infoB os.FileInfo) error {
 			entryType = "directory"
 		}
 		return fmt.Errorf(
-			"expected %s '%s' at '%s'",
+			"expected %s %s at %s",
 			entryType, infoA.Name(), w.dirB,
 		)
 	}
@@ -131,7 +131,7 @@ func (w *walker) walkFile(infoA os.FileInfo, infoB os.FileInfo) error {
 	} else {
 		if infoA.Size() != infoB.Size() {
 			return fmt.Errorf(
-				"files differ in size: '%s/%s' -> %dB, when '%s/%s' -> %dB",
+				"files differ in size:\n* %s/%s -> %dB\n* %s/%s -> %dB",
 				w.dirA, infoA.Name(), infoA.Size(),
 				w.dirB, infoB.Name(), infoB.Size(),
 			)
