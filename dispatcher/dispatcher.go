@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"context"
 	"sync"
 )
 
@@ -10,15 +9,14 @@ type compareInfo struct {
 }
 
 type dispatcher struct {
-	cancel context.CancelCauseFunc
-	sink   chan compareInfo
-	ctx    context.Context
-	wg     sync.WaitGroup
+	lifecycle lifecycle
+	sink      chan compareInfo
+	wg        sync.WaitGroup
 }
 
 func (d *dispatcher) Emit(pathA, pathB string) (shouldContinue bool) {
 	select {
-	case <-d.ctx.Done():
+	case <-d.lifecycle.Context().Done():
 		return
 	default:
 		d.sink <- compareInfo{pathA, pathB}
@@ -29,8 +27,8 @@ func (d *dispatcher) Emit(pathA, pathB string) (shouldContinue bool) {
 func (d *dispatcher) Close() error {
 	close(d.sink)
 	d.wg.Wait()
-	defer d.cancel(nil)
-	return context.Cause(d.ctx)
+	defer d.lifecycle.Close()
+	return d.lifecycle.GetError()
 }
 
 func (d *dispatcher) spawnThread() {
@@ -38,7 +36,7 @@ func (d *dispatcher) spawnThread() {
 	handler := newBufferedComparer()
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-d.lifecycle.Context().Done():
 			return
 		case info, ok := <-d.sink:
 			if !ok {
@@ -46,7 +44,7 @@ func (d *dispatcher) spawnThread() {
 			}
 			err := handler.DispatchCompareRequest(info)
 			if err != nil {
-				d.cancel(err)
+				d.lifecycle.EmitError(err)
 			}
 		}
 	}
@@ -56,11 +54,15 @@ func Run(options Options) Emitter {
 	if options.MetadataOnly {
 		return noopEmitter{}
 	}
-	ctx, cancel := context.WithCancelCause(options.Context)
+	var lifecycle lifecycle
+	if options.Failfast {
+		lifecycle = newFailFastLifecycle(options.Context)
+	} else {
+		lifecycle = newCollectingLifecycle(options.Context)
+	}
 	self := &dispatcher{
-		ctx:    ctx,
-		sink:   make(chan compareInfo, options.QueueSize),
-		cancel: cancel,
+		lifecycle: lifecycle,
+		sink:      make(chan compareInfo, options.QueueSize),
 	}
 	self.wg.Add(options.Threads)
 	for range options.Threads {
