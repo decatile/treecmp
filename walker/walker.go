@@ -24,30 +24,30 @@ func (w walker) cd(dir1, dir2 string) walker {
 	return w
 }
 
-func (w walker) walk() bool {
+func (w walker) walk() walkResult {
 	entries1, err := os.ReadDir(w.dir1)
 	if err != nil {
 		w.sink <- fmt.Errorf("failed to read directory %s: %w", w.dir1, err)
-		return false
+		return resultFail
 	}
 	entries2, err := os.ReadDir(w.dir2)
 	if err != nil {
 		w.sink <- fmt.Errorf("failed to read directory %s: %w", w.dir2, err)
-		return false
+		return resultFail
 	}
 	if len(entries1) != len(entries2) {
 		w.sink <- fmt.Errorf(
 			"directories differ in entries amount:\n%s -> %d\n%s -> %d",
 			w.dir1, len(entries1), w.dir2, len(entries2),
 		)
-		return false
+		return resultFail
 	}
 	entriesMap2 := make(map[string]os.DirEntry)
 	entriesNotFound1 := make([]string, 0)
 	for _, entry2 := range entries2 {
 		entriesMap2[entry2.Name()] = entry2
 	}
-	ok := true
+	res := resultOk
 	for _, entry1 := range entries1 {
 		entry2, ok := entriesMap2[entry1.Name()]
 		if ok {
@@ -55,15 +55,19 @@ func (w walker) walk() bool {
 			info1, err := entry1.Info()
 			if err != nil {
 				w.sink <- fmt.Errorf("failed to read file info: %w", err)
-				ok = false
+				res = resultFail
 			}
 			info2, err := entry2.Info()
 			if err != nil {
 				w.sink <- fmt.Errorf("failed to read file info: %w", err)
-				ok = false
+				res = resultFail
 			}
-			if !w.walkFile(info1, info2) {
-				ok = false
+			switch w.walkFile(info1, info2) {
+			case resultOk:
+			case resultFail:
+				res = resultFail
+			case resultCancel:
+				return resultCancel
 			}
 		} else {
 			entriesNotFound1 = append(entriesNotFound1, entry1.Name())
@@ -80,12 +84,12 @@ func (w walker) walk() bool {
 			strings.Join(entriesNotFound1, "\n+ "),
 			strings.Join(entriesNotFound2, "\n- "),
 		)
-		ok = false
+		res = resultFail
 	}
-	return ok
+	return res
 }
 
-func (w *walker) walkFile(info1 os.FileInfo, info2 os.FileInfo) bool {
+func (w *walker) walkFile(info1 os.FileInfo, info2 os.FileInfo) walkResult {
 	if info1.Name() != info2.Name() {
 		entryType := "file"
 		if info1.IsDir() {
@@ -95,15 +99,12 @@ func (w *walker) walkFile(info1 os.FileInfo, info2 os.FileInfo) bool {
 			"expected %s %s at %s",
 			entryType, info1.Name(), w.dir2,
 		)
-		return false
+		return resultFail
 	}
 	filepathA := filepath.Join(w.dir1, info1.Name())
 	filepathB := filepath.Join(w.dir2, info2.Name())
 	if info1.IsDir() {
-		ok := w.cd(filepathA, filepathB).walk()
-		if !ok {
-			return false
-		}
+		return w.cd(filepathA, filepathB).walk()
 	} else {
 		if info1.Size() != info2.Size() {
 			w.sink <- fmt.Errorf(
@@ -111,14 +112,18 @@ func (w *walker) walkFile(info1 os.FileInfo, info2 os.FileInfo) bool {
 				w.dir1, info1.Name(), info1.Size(),
 				w.dir2, info2.Name(), info2.Size(),
 			)
-			return false
+			return resultFail
 		}
 		err := w.comparer.Compare(filepathA, filepathB)
-		if err != nil {
-			return false
+		switch err {
+		case nil:
+			return resultOk
+		case context.Canceled, context.DeadlineExceeded:
+			return resultCancel
+		default:
+			return resultFail
 		}
 	}
-	return true
 }
 
 func Walk(ctx context.Context, dir1, dir2 string, concurrency int) error {
@@ -130,10 +135,13 @@ func Walk(ctx context.Context, dir1, dir2 string, concurrency int) error {
 		}
 	}()
 	comparer := files.NewComparer(ctx, concurrency, errs)
-	ok := walker{dir1, dir2, errs, comparer}.walk()
+	res := walker{dir1, dir2, errs, comparer}.walk()
 	comparer.Close()
-	if !ok {
+	switch res {
+	case resultFail:
 		return errors.New("one or more errors occurred")
+	case resultCancel:
+		return errors.New("interrupted")
 	}
 	return nil
 }
