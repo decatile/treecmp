@@ -1,164 +1,139 @@
 package walker
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
-	"github.com/decatile/treecmp/dispatcher"
+	"github.com/decatile/treecmp/files"
 )
 
 type walker struct {
-	dirA       string
-	dirB       string
-	failfast   bool
-	dispatcher dispatcher.Emitter
+	dir1     string
+	dir2     string
+	sink     chan<- error
+	comparer files.Comparer
 }
 
-func (w walker) cd(dirA, dirB string) walker {
-	w.dirA = dirA
-	w.dirB = dirB
+func (w walker) cd(dir1, dir2 string) walker {
+	w.dir1 = dir1
+	w.dir2 = dir2
 	return w
 }
 
-func (w walker) walk() error {
-	entriesA, err := os.ReadDir(w.dirA)
+func (w walker) walk() bool {
+	entries1, err := os.ReadDir(w.dir1)
 	if err != nil {
-		return err
+		w.sink <- fmt.Errorf("failed to read directory %s: %w", w.dir1, err)
+		return false
 	}
-	entriesB, err := os.ReadDir(w.dirB)
+	entries2, err := os.ReadDir(w.dir2)
 	if err != nil {
-		return err
+		w.sink <- fmt.Errorf("failed to read directory %s: %w", w.dir2, err)
+		return false
 	}
-	if len(entriesA) != len(entriesB) {
-		return fmt.Errorf(
+	if len(entries1) != len(entries2) {
+		w.sink <- fmt.Errorf(
 			"directories differ in entries amount:\n%s -> %d\n%s -> %d",
-			w.dirA, len(entriesA), w.dirB, len(entriesB),
+			w.dir1, len(entries1), w.dir2, len(entries2),
 		)
+		return false
 	}
-	slices.SortFunc(entriesA, dirComparer)
-	if w.failfast {
-		slices.SortFunc(entriesB, dirComparer)
-		for i, entryA := range entriesA {
-			infoA, err := entryA.Info()
-			if err != nil {
-				return err
-			}
-			infoB, err := entriesB[i].Info()
-			if err != nil {
-				return err
-			}
-			err = w.walkFile(infoA, infoB)
-			if err == context.Canceled {
-				break
-			}
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		errs := make([]error, 0)
-		entriesMapB := make(map[string]os.DirEntry)
-		entriesNotFoundA := make([]string, 0)
-		for _, entry := range entriesB {
-			entriesMapB[entry.Name()] = entry
-		}
-		for _, entryA := range entriesA {
-			entryB, ok := entriesMapB[entryA.Name()]
-			if ok {
-				delete(entriesMapB, entryA.Name())
-				infoA, err := entryA.Info()
-				if err != nil {
-					errs = append(errs, err)
-					continue
-				}
-				infoB, err := entryB.Info()
-				if err != nil {
-					errs = append(errs, err)
-					continue
-				}
-				err = w.walkFile(infoA, infoB)
-				if err == context.Canceled {
-					break
-				}
-				if err != nil {
-					errs = append(errs, err)
-				}
-			} else {
-				entriesNotFoundA = append(entriesNotFoundA, entryA.Name())
-			}
-		}
-		if len(entriesNotFoundA) > 0 {
-			entriesNotFoundB := make([]string, 0, len(entriesMapB))
-			for name := range entriesMapB {
-				entriesNotFoundB = append(entriesNotFoundB, name)
-			}
-			errs = append(errs, fmt.Errorf(
-				"not matching files in directories %s and %s:\n+ %s\n- %s",
-				w.dirA, w.dirB,
-				strings.Join(entriesNotFoundA, "\n+ "),
-				strings.Join(entriesNotFoundB, "\n- "),
-			))
-		}
-		return errors.Join(errs...)
+	entriesMap2 := make(map[string]os.DirEntry)
+	entriesNotFound1 := make([]string, 0)
+	for _, entry2 := range entries2 {
+		entriesMap2[entry2.Name()] = entry2
 	}
-	return nil
+	ok := true
+	for _, entry1 := range entries1 {
+		entry2, ok := entriesMap2[entry1.Name()]
+		if ok {
+			delete(entriesMap2, entry1.Name())
+			info1, err := entry1.Info()
+			if err != nil {
+				w.sink <- fmt.Errorf("failed to read file info: %w", err)
+				ok = false
+			}
+			info2, err := entry2.Info()
+			if err != nil {
+				w.sink <- fmt.Errorf("failed to read file info: %w", err)
+				ok = false
+			}
+			if !w.walkFile(info1, info2) {
+				ok = false
+			}
+		} else {
+			entriesNotFound1 = append(entriesNotFound1, entry1.Name())
+		}
+	}
+	if len(entriesNotFound1) > 0 {
+		entriesNotFound2 := make([]string, 0, len(entriesMap2))
+		for name := range entriesMap2 {
+			entriesNotFound2 = append(entriesNotFound2, name)
+		}
+		w.sink <- fmt.Errorf(
+			"not matching files in directories %s and %s:\n+ %s\n- %s",
+			w.dir1, w.dir2,
+			strings.Join(entriesNotFound1, "\n+ "),
+			strings.Join(entriesNotFound2, "\n- "),
+		)
+		ok = false
+	}
+	return ok
 }
 
-func (w *walker) walkFile(infoA os.FileInfo, infoB os.FileInfo) error {
-	if infoA.Name() != infoB.Name() {
+func (w *walker) walkFile(info1 os.FileInfo, info2 os.FileInfo) bool {
+	if info1.Name() != info2.Name() {
 		entryType := "file"
-		if infoA.IsDir() {
+		if info1.IsDir() {
 			entryType = "directory"
 		}
-		return fmt.Errorf(
+		w.sink <- fmt.Errorf(
 			"expected %s %s at %s",
-			entryType, infoA.Name(), w.dirB,
+			entryType, info1.Name(), w.dir2,
 		)
+		return false
 	}
-	filepathA := filepath.Join(w.dirA, infoA.Name())
-	filepathB := filepath.Join(w.dirB, infoB.Name())
-	if infoA.IsDir() {
-		err := w.cd(filepathA, filepathB).walk()
-		if err != nil {
-			return err
+	filepathA := filepath.Join(w.dir1, info1.Name())
+	filepathB := filepath.Join(w.dir2, info2.Name())
+	if info1.IsDir() {
+		ok := w.cd(filepathA, filepathB).walk()
+		if !ok {
+			return false
 		}
 	} else {
-		if infoA.Size() != infoB.Size() {
-			return fmt.Errorf(
+		if info1.Size() != info2.Size() {
+			w.sink <- fmt.Errorf(
 				"files differ in size:\n* %s/%s -> %dB\n* %s/%s -> %dB",
-				w.dirA, infoA.Name(), infoA.Size(),
-				w.dirB, infoB.Name(), infoB.Size(),
+				w.dir1, info1.Name(), info1.Size(),
+				w.dir2, info2.Name(), info2.Size(),
 			)
+			return false
 		}
-		if !w.dispatcher.Emit(filepathA, filepathB) {
-			return context.Canceled
+		err := w.comparer.Compare(filepathA, filepathB)
+		if err != nil {
+			return false
 		}
+	}
+	return true
+}
+
+func Walk(ctx context.Context, dir1, dir2 string, concurrency int) error {
+	errs := make(chan error)
+	defer close(errs)
+	go func() {
+		for err := range errs {
+			fmt.Println(err)
+		}
+	}()
+	comparer := files.NewComparer(ctx, concurrency, errs)
+	ok := walker{dir1, dir2, errs, comparer}.walk()
+	comparer.Close()
+	if !ok {
+		return errors.New("one or more errors occurred")
 	}
 	return nil
-}
-
-func dirComparer(a os.DirEntry, b os.DirEntry) int {
-	if a.IsDir() == b.IsDir() {
-		return cmp.Compare(a.Name(), b.Name())
-	}
-	if a.IsDir() {
-		return -1
-	}
-	return 1
-}
-
-func Walk(dirA string, dirB string, opt dispatcher.Options) error {
-	dispatcher := dispatcher.Run(opt)
-	err := walker{dirA, dirB, opt.Failfast, dispatcher}.walk()
-	err2 := dispatcher.Close()
-	if err != nil {
-		return err
-	}
-	return err2
 }
